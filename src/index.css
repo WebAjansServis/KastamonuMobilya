@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #fcfaf7;
+    color: #1c1c1c;
+  }
+  
+  h1, h2, h3, .font-heading, .font-serif {
+    font-family: 'Playfair Display', Georgia, serif;
+  }
+}
+
+/* Custom Professional Polish Theme Styling */
+.bg-polish-dark {
+  background-color: #1c1c1c;
+}
+
+.text-polish-dark {
+  color: #1c1c1c;
+}
+
+.bg-polish-accent {
+  background-color: #a67c52;
+}
+
+.text-polish-accent {
+  color: #a67c52;
+}
+
+.border-polish-accent {
+  border-color: #a67c52;
+}
+
+.bg-polish-cream {
+  background-color: #fcfaf7;
+}
+
+.wood-texture-bg {
+  background-color: #1c1c1c;
+  background-image: radial-gradient(rgba(166, 124, 82, 0.15) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.gold-accent-gradient {
+  background: linear-gradient(135deg, #a67c52 0%, #8b5e3c 100%);
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(166, 124, 82, 0.2);
+}
+
