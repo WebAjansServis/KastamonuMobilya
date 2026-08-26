@@ -20,14 +20,14 @@ if (!fs.existsSync(ASSETS_DIR)) {
   throw new Error(`dist klasörü bulunamadı: ${ASSETS_DIR}`);
 }
 
-function headers(extra = {}) {
+function authHeaders(extra = {}) {
   return {
     Authorization: `Bearer ${API_TOKEN}`,
     ...extra,
   };
 }
 
-async function parseResponse(response) {
+async function parseJsonResponse(response) {
   const text = await response.text();
 
   let data;
@@ -35,39 +35,45 @@ async function parseResponse(response) {
     data = JSON.parse(text);
   } catch {
     throw new Error(
-      `Cloudflare API geçersiz JSON döndürdü. HTTP ${response.status}: ${text}`
+      `Cloudflare geçersiz JSON döndürdü. HTTP ${response.status}: ${text}`
     );
   }
 
   if (!response.ok || data.success === false) {
     const details =
-      data.errors?.map((e) => `${e.code ?? ""} ${e.message ?? ""}`).join(" | ") ||
-      JSON.stringify(data);
+      data.errors
+        ?.map((e) => `${e.code ?? ""} ${e.message ?? ""}`)
+        .join(" | ") || JSON.stringify(data);
 
-    throw new Error(`Cloudflare API hatası (HTTP ${response.status}): ${details}`);
+    throw new Error(
+      `Cloudflare API hatası (HTTP ${response.status}): ${details}`
+    );
   }
 
   return data;
 }
 
 function getFiles(dir, baseDir = dir) {
-  const result = [];
+  const files = [];
 
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
 
     if (entry.isDirectory()) {
-      result.push(...getFiles(fullPath, baseDir));
+      files.push(...getFiles(fullPath, baseDir));
     } else if (entry.isFile()) {
-      const relative = path.relative(baseDir, fullPath).replace(/\\/g, "/");
-      result.push({
+      const relativePath = path
+        .relative(baseDir, fullPath)
+        .replace(/\\/g, "/");
+
+      files.push({
         fullPath,
-        relativePath: `/${relative}`,
+        relativePath: `/${relativePath}`,
       });
     }
   }
 
-  return result;
+  return files;
 }
 
 function createManifest(files) {
@@ -77,6 +83,7 @@ function createManifest(files) {
     const content = fs.readFileSync(file.fullPath);
     const extension = path.extname(file.relativePath).replace(".", "");
 
+    // Cloudflare'ın resmi örneğindeki manifest hash formatı.
     const hash = crypto
       .createHash("sha256")
       .update(content.toString("base64") + extension)
@@ -92,7 +99,7 @@ function createManifest(files) {
   return manifest;
 }
 
-function buildHashMap(files, manifest) {
+function createHashToFileMap(files, manifest) {
   const map = new Map();
 
   for (const file of files) {
@@ -103,114 +110,132 @@ function buildHashMap(files, manifest) {
   return map;
 }
 
-function contentType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
+async function getOrCreateWorker() {
+  console.log(`🔎 ${WORKER_NAME} Worker kontrol ediliyor...`);
 
-  const types = {
-    ".html": "text/html",
-    ".css": "text/css",
-    ".js": "application/javascript",
-    ".mjs": "application/javascript",
-    ".json": "application/json",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".ico": "image/x-icon",
-    ".txt": "text/plain",
-    ".xml": "application/xml",
-    ".webmanifest": "application/manifest+json",
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".mp4": "video/mp4",
-    ".webm": "video/webm",
-  };
+  const listResponse = await fetch(`${API_BASE}/workers/workers`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
 
-  return types[ext] || "application/octet-stream";
-}
+  const listData = await parseJsonResponse(listResponse);
 
-async function main() {
-  console.log("🚀 KastamonuMobilya Cloudflare API deploy başlıyor...");
+  const existingWorker = listData.result?.find(
+    (worker) => worker.name === WORKER_NAME
+  );
 
-  const files = getFiles(ASSETS_DIR);
-
-  if (files.length === 0) {
-    throw new Error("dist klasöründe deploy edilecek dosya bulunamadı.");
+  if (existingWorker) {
+    console.log(`✅ Worker zaten mevcut: ${WORKER_NAME}`);
+    return existingWorker;
   }
 
-  console.log(`📦 ${files.length} dosya bulundu.`);
+  console.log(`🆕 Worker oluşturuluyor: ${WORKER_NAME}`);
 
-  const manifest = createManifest(files);
-  const hashMap = buildHashMap(files, manifest);
+  const createResponse = await fetch(`${API_BASE}/workers/workers`, {
+    method: "POST",
+    headers: authHeaders({
+      "Content-Type": "application/json",
+    }),
+    body: JSON.stringify({
+      name: WORKER_NAME,
+      subdomain: {
+        enabled: true,
+      },
+      observability: {
+        enabled: true,
+      },
+    }),
+  });
 
+  const createData = await parseJsonResponse(createResponse);
+
+  console.log("✅ Worker oluşturuldu.");
+
+  if (createData.result?.subdomain?.url) {
+    console.log(`🌍 workers.dev: ${createData.result.subdomain.url}`);
+  }
+
+  return createData.result;
+}
+
+async function createAssetUploadSession(manifest) {
   console.log("📝 Asset upload session oluşturuluyor...");
 
-  const sessionResponse = await fetch(
+  const response = await fetch(
     `${API_BASE}/workers/scripts/${WORKER_NAME}/assets-upload-session`,
     {
       method: "POST",
-      headers: headers({
+      headers: authHeaders({
         "Content-Type": "application/json",
       }),
       body: JSON.stringify({ manifest }),
     }
   );
 
-  const session = await parseResponse(sessionResponse);
+  const data = await parseJsonResponse(response);
 
-  const uploadJwt = session.result?.jwt;
-  const buckets = session.result?.buckets ?? [];
+  const jwt = data.result?.jwt;
+  const buckets = data.result?.buckets ?? [];
 
-  if (!uploadJwt) {
-    throw new Error("Cloudflare upload JWT döndürmedi.");
+  if (!jwt) {
+    throw new Error("Cloudflare asset upload JWT döndürmedi.");
   }
 
-  console.log(`📤 ${buckets.length} upload bucketı hazırlanıyor...`);
+  return { jwt, buckets };
+}
 
+async function uploadAssetBuckets(
+  buckets,
+  uploadJwt,
+  hashToFileMap
+) {
   let completionJwt = uploadJwt;
 
   for (let i = 0; i < buckets.length; i++) {
     const bucket = buckets[i];
 
-    const form = new FormData();
+    const payload = {};
 
     for (const hash of bucket) {
-      const file = hashMap.get(hash);
+      const file = hashToFileMap.get(hash);
 
       if (!file) {
-        throw new Error(`Hash için dosya bulunamadı: ${hash}`);
+        throw new Error(`Manifest hash için dosya bulunamadı: ${hash}`);
       }
 
-      const buffer = fs.readFileSync(file.fullPath);
-      const base64 = buffer.toString("base64");
-
-      form.append(hash, base64);
+      const content = fs.readFileSync(file.fullPath);
+      payload[hash] = content.toString("base64");
 
       console.log(`  ↳ ${file.relativePath}`);
     }
 
-    console.log(`📤 Bucket ${i + 1}/${buckets.length} yükleniyor...`);
+    console.log(
+      `📤 Asset bucket ${i + 1}/${buckets.length} yükleniyor...`
+    );
 
-    const uploadResponse = await fetch(
+    const response = await fetch(
       `${API_BASE}/workers/assets/upload?base64=true`,
       {
         method: "POST",
-        headers: headers(),
-        body: form,
+        headers: {
+          Authorization: `Bearer ${uploadJwt}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
       }
     );
 
-    const uploadResult = await parseResponse(uploadResponse);
+    const data = await parseJsonResponse(response);
 
-    if (uploadResult.result?.jwt) {
-      completionJwt = uploadResult.result.jwt;
+    if (data.result?.jwt) {
+      completionJwt = data.result.jwt;
     }
   }
 
-  console.log("✅ Asset yükleme tamamlandı.");
+  return completionJwt;
+}
 
+async function deployWorkerVersion(completionJwt) {
   const workerScript = `
 export default {
   async fetch(request, env) {
@@ -250,27 +275,71 @@ export default {
     `${WORKER_NAME}.mjs`
   );
 
-  console.log("🚀 Worker version yükleniyor...");
+  console.log("🚀 Worker version deploy ediliyor...");
 
-  const deployResponse = await fetch(
+  const response = await fetch(
     `${API_BASE}/workers/scripts/${WORKER_NAME}`,
     {
       method: "PUT",
-      headers: headers(),
+      headers: authHeaders(),
       body: form,
     }
   );
 
-  await parseResponse(deployResponse);
+  const data = await parseJsonResponse(response);
 
-  console.log("✅ Cloudflare deploy başarılı.");
+  console.log("✅ Worker version başarıyla yayınlandı.");
+
+  return data;
+}
+
+async function main() {
+  console.log("🚀 KastamonuMobilya Cloudflare API deploy başlıyor...");
+
+  const files = getFiles(ASSETS_DIR);
+
+  if (files.length === 0) {
+    throw new Error("dist klasöründe deploy edilecek dosya bulunamadı.");
+  }
+
+  console.log(`📦 ${files.length} dosya bulundu.`);
+
+  const manifest = createManifest(files);
+  const hashToFileMap = createHashToFileMap(files, manifest);
+
+  await getOrCreateWorker();
+
+  const { jwt: uploadJwt, buckets } =
+    await createAssetUploadSession(manifest);
+
+  let completionJwt = uploadJwt;
+
+  if (buckets.length === 0) {
+    console.log(
+      "✅ Yeni asset yüklenmesine gerek yok; mevcut asset'ler yeniden kullanılacak."
+    );
+  } else {
+    completionJwt = await uploadAssetBuckets(
+      buckets,
+      uploadJwt,
+      hashToFileMap
+    );
+
+    console.log("✅ Asset yükleme tamamlandı.");
+  }
+
+  await deployWorkerVersion(completionJwt);
+
+  console.log("");
+  console.log("🎉 DEPLOY BAŞARILI");
   console.log(
-    `🌍 Worker adı: ${WORKER_NAME}`
+    `🌍 https://${WORKER_NAME}.<workers-dev-subdomain>.workers.dev`
   );
 }
 
 main().catch((error) => {
-  console.error("❌ Deploy başarısız:");
+  console.error("");
+  console.error("❌ DEPLOY BAŞARISIZ");
   console.error(error.message);
   process.exit(1);
 });
