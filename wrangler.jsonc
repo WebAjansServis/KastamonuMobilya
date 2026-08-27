@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "kastamonumobilya",
+  "account_id": "71ec48f15ef1a9b54d5efc24da7b768f",
   "compatibility_date": "2026-08-26",
   "assets": {
     "directory": "./dist"
