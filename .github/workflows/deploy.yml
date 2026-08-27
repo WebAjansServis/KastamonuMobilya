@@ -27,10 +27,14 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Check Cloudflare Authentication
-        run: npx wrangler whoami
+      - name: Test Cloudflare Worker API
+        run: |
+          curl -sS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/services/kastamonumobilya"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy to Cloudflare Workers
         run: npx wrangler deploy
